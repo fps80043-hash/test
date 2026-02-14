@@ -17,26 +17,22 @@ const MIME = {
   '.jpeg': 'image/jpeg',
   '.webp': 'image/webp',
   '.ico': 'image/x-icon',
+  '.txt': 'text/plain; charset=utf-8',
+  '.map': 'application/json; charset=utf-8',
   '.woff': 'font/woff',
   '.woff2': 'font/woff2',
-  '.ttf': 'font/ttf',
-  '.map': 'application/json; charset=utf-8',
-  '.txt': 'text/plain; charset=utf-8',
 };
 
-function safePathJoin(baseDir, urlPath) {
-  // Prevent path traversal (..)
-  const normalized = path
-    .normalize(urlPath)
-    .replace(/^([\\/]*\.\.[\\/])+/, '')
-    .replace(/^\//, '');
-  return path.join(baseDir, normalized);
+function safeJoin(base, target) {
+  const targetPath = path.normalize(path.join(base, target));
+  if (!targetPath.startsWith(base)) return base; // prevent path traversal
+  return targetPath;
 }
 
-async function fileExists(filePath) {
+async function fileExists(p) {
   try {
-    await fs.stat(filePath);
-    return true;
+    const s = await fs.stat(p);
+    return s.isFile();
   } catch {
     return false;
   }
@@ -44,62 +40,42 @@ async function fileExists(filePath) {
 
 const server = http.createServer(async (req, res) => {
   try {
-    if (!req.url) {
-      res.writeHead(400);
-      res.end('Bad Request');
+    const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+    const pathname = decodeURIComponent(url.pathname);
+
+    // Healthcheck endpoint (Railway or external)
+    if (pathname === '/health' || pathname === '/_health') {
+      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('ok');
       return;
     }
 
-    const requestUrl = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`);
-    const pathname = decodeURIComponent(requestUrl.pathname);
+    // Serve static files from dist
+    let rel = pathname === '/' ? '/index.html' : pathname;
+    let filePath = safeJoin(DIST_DIR, rel);
 
-    // Map "/" -> "index.html"
-    const mappedPath = pathname === '/' ? '/index.html' : pathname;
-    const absolutePath = safePathJoin(DIST_DIR, mappedPath);
+    // If request is for a directory, serve index.html
+    if (filePath.endsWith(path.sep)) filePath = path.join(filePath, 'index.html');
 
-    // If the requested path exists and is a file, serve it.
-    if (await fileExists(absolutePath)) {
-      const ext = path.extname(absolutePath).toLowerCase();
-      const data = await fs.readFile(absolutePath);
-      res.setHeader('Content-Type', MIME[ext] ?? 'application/octet-stream');
-      res.setHeader(
-        'Cache-Control',
-        mappedPath.startsWith('/assets/') ? 'public, max-age=31536000, immutable' : 'no-cache'
-      );
-      res.writeHead(200);
-      res.end(data);
-      return;
+    // SPA fallback: if file doesn't exist, serve index.html
+    if (!(await fileExists(filePath))) {
+      filePath = path.join(DIST_DIR, 'index.html');
     }
 
-    // For SPA routes: if it's NOT an asset, fall back to index.html
-    if (!mappedPath.startsWith('/assets/')) {
-      const indexPath = path.join(DIST_DIR, 'index.html');
-      const data = await fs.readFile(indexPath);
-      res.setHeader('Content-Type', MIME['.html']);
-      res.setHeader('Cache-Control', 'no-cache');
-      res.writeHead(200);
-      res.end(data);
-      return;
-    }
+    const ext = path.extname(filePath).toLowerCase();
+    const contentType = MIME[ext] ?? 'application/octet-stream';
 
-    // Missing asset
-    res.writeHead(404);
-    res.end('Not Found');
+    const data = await fs.readFile(filePath);
+    res.writeHead(200, { 'Content-Type': contentType });
+    res.end(data);
   } catch (err) {
-    res.writeHead(500);
-    res.end('Internal Server Error');
+    res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Server error');
+    console.error(err);
   }
 });
 
-(async () => {
-  // Fail fast with a clear error if dist is missing
-  const hasDist = await fileExists(DIST_DIR);
-  if (!hasDist) {
-    console.error('❌ dist/ folder not found. Did you run "npm run build"?');
-    process.exit(1);
-  }
-
-  server.listen(PORT, HOST, () => {
-    console.log(`✅ Web server is listening on http://${HOST}:${PORT}`);
-  });
-})();
+server.listen(PORT, HOST, () => {
+  console.log(`Listening on http://${HOST}:${PORT}`);
+  console.log(`Health: http://${HOST}:${PORT}/health`);
+});

@@ -1,22 +1,15 @@
-FROM python:3.11-slim
-
+# Railway will use this Dockerfile automatically
+FROM node:20-alpine AS build
 WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy requirements first for better caching
-COPY backend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy the rest of the application
-COPY backend/ ./backend/
-COPY static/ ./static/
-
-# Expose the port
-EXPOSE 8000
-
-# Start the application
-CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+FROM node:20-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/server.mjs ./server.mjs
+EXPOSE 3000
+CMD ["node","server.mjs"]
